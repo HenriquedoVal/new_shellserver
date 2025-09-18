@@ -1,0 +1,4 @@
+[submodule "libgit2"]
+	path = libgit2
+	url = https://github.com/HenriquedoVal/libgit2.git
+	branch = dont-export-symbols-on-static-build

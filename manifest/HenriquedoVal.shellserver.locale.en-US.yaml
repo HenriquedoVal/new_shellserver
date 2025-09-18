@@ -1,0 +1,24 @@
+PackageIdentifier: HenriquedoVal.shellserver
+PackageVersion: 0.0.1
+PackageLocale: en-US
+Publisher: Henrique do Val
+PublisherUrl: https://github.com/HenriquedoVal
+PublisherSupportUrl: https://github.com/HenriquedoVal/new_shellserver/issues
+# PrivacyUrl:
+Author: Henrique do Val
+PackageName: New ShellServer
+PackageUrl: https://github.com/HenriquedoVal/new_shellserver
+License: MIT
+LicenseUrl: https://github.com/HenriquedoVal/new_shellserver/blob/main/LICENSE
+Copyright: Copyright (c) 2025 Henrique do Val
+ShortDescription: A fast prompt and navigation optmizer for terminal shell on Windows
+# Description:
+Moniker: shellserver
+Tags:
+- new-shellserver
+- shellserver
+# ReleaseNotes:
+# ReleaseNotesUrl:
+# Documentations:
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

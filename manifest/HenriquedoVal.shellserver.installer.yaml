@@ -1,0 +1,18 @@
+PackageIdentifier: HenriquedoVal.shellserver
+PackageVersion: 0.0.1
+InstallerLocale: en-US
+InstallerType: zip
+Commands:
+- nss_server
+ReleaseDate: 2025-09-17
+ArchiveBinariesDependOnPath: true
+Installers:
+- Architecture: x64
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: nss_server.exe
+    PortableCommandAlias: nss_server
+  InstallerUrl: https://github.com/HenriquedoVal/new_shellserver/releases/download/v0.0.1/shellserver.zip
+  InstallerSha256: DFCA6ED504B8E8F795F21B279848F97A0A6528F35D41BC995454D4291792773D
+ManifestType: installer
+ManifestVersion: 1.10.0
