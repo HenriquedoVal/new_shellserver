@@ -9,6 +9,7 @@
 
 #define SS_TIMEOUT_MS 1000
 
+static short g_port = PORT;
 static const char g_transfer_magic[4] = {'S', 'c', 'S', 'h'};
 static Context *g_ctx = NULL;
 
@@ -16,7 +17,7 @@ static struct sockaddr_in get_server_addr(void) {
     unsigned char localhost[4] = {127, 0, 0, 1};
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
-        .sin_port = htons(PORT),
+        .sin_port = htons(g_port),
         .sin_addr.s_addr = *(unsigned *)&localhost
     };
     return server_addr;

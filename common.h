@@ -1,6 +1,7 @@
 #pragma once
 
 #define _CRT_SECURE_NO_WARNINGS
+#include <assert.h>
 #include <stdbool.h>
 
 #include <winsock2.h>
@@ -14,8 +15,11 @@ enum MESSAGE_KIND {
     MK_REFADD,
     MK_REFGET,
     MK_REFDEL,
-    MK_REFINC,
-    MK_REFGETALL
+    MK_MVREFDOWN,
+    MK_REFGETALL,
+    MK_DUMP_MEM,
+    MK_DUMP_DISK,
+    MK_SAVE
 };
 
 typedef struct {
@@ -44,3 +48,5 @@ typedef struct {
     unsigned cmd_dur_ms;
     char path[];
 } PromptData;
+
+static_assert(MAX_UDP > sizeof(PromptData) + MAX_PATH, "");

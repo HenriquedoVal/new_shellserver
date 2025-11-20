@@ -10,14 +10,17 @@
 
 __declspec(dllexport) bool ss_del_refpath(const char *refpath);
 __declspec(dllexport) bool ss_del_refpath_by_path(const char *path);
-__declspec(dllexport) bool ss_inc_refpath_priority(const char *path);
+__declspec(dllexport) bool ss_move_refpath_down(const char *refpath);
 __declspec(dllexport) bool ss_kill_server(void);
+__declspec(dllexport) bool ss_save_cache(void);
 __declspec(dllexport) bool ss_add_refpath(
         const char *path, /*nullable*/ const char *as);
 
 __declspec(dllexport) const char *ss_echo(const char *msg);
 __declspec(dllexport) const char *ss_get_path(const char *refpath);
 __declspec(dllexport) const char *ss_get_all_refpaths(void);
+__declspec(dllexport) const char *ss_get_cache_memory_state(void);
+__declspec(dllexport) const char *ss_get_cache_stored_state(void);
 __declspec(dllexport) const char *ss_get_prompt(
         const char *path, short term_width, int error_code, unsigned cmd_dur_ms);
 
