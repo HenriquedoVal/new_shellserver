@@ -3,6 +3,16 @@ This is the new [ShellServer](https://github.com/HenriquedoVal/shellserver).
 Install: 
 - Download on Releases
 - Extract somewhere on PATH
+- The PowerShell client can be installed with `Install-Module NewShellServer -AllowClobber`.
+Here is the [source](https://github.com/HenriquedoVal/new-shellserver-clients/tree/main/pwsh).  
+
+
+Run:
+~~~PowerShell
+nss_server                    # start server
+Import-Module NewShellServer  # start client
+~~~
+
 
 Build with CMake and Ninja:
 ~~~PowerShell
@@ -12,6 +22,3 @@ mkdir build && cd build
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release .. && ninja
 # move nss_server.exe and nss_client.dll somewhere on PATH
 ~~~
-
-The PowerShell client can be installed with `Install-Module NewShellServer -AllowClobber`. 
-Here is the [source](https://github.com/HenriquedoVal/new-shellserver-clients/tree/main/pwsh).  
