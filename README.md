@@ -22,3 +22,5 @@ mkdir build && cd build
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release .. && ninja
 # move nss_server.exe and nss_client.dll somewhere on PATH
 ~~~
+
+If the prompt clutters your screen too much, I suggest using [SinglePrompt](https://github.com/HenriquedoVal/SinglePrompt).
