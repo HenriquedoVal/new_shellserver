@@ -267,7 +267,7 @@ typedef struct {
 } StatusItem;
 
 
-static bool changes_in_workdir_or_head(char *buf)
+static bool changes_in_workdir_index_or_head(char *buf)
 {
     while (1) {
         FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *)buf;
@@ -276,10 +276,11 @@ static bool changes_in_workdir_or_head(char *buf)
         DWORD len = fni->FileNameLength;  // in bytes
         filename[len / 2] = 0;
 
-        bool startswith_dotgit = memcmp(filename, L".git", 8)        == 0;
-        bool is_head           = memcmp(filename, L".git\\HEAD", 20) == 0;
+        bool startswith_dotgit = memcmp(filename, L".git", 8)         == 0;
+        bool is_head           = memcmp(filename, L".git\\HEAD", 20)  == 0;
+        bool is_index          = memcmp(filename, L".git\\index", 22) == 0;
 
-        if (!startswith_dotgit || is_head) return true;
+        if (!startswith_dotgit || is_head || is_index) return true;
 
         if (!fni->NextEntryOffset) break;
         buf += fni->NextEntryOffset;
@@ -447,7 +448,7 @@ static unsigned long fsmon_daemon_thread_proc(void *param) {
         ret = GetOverlappedResult(*dir, o, &returned, false);
         assert(ret);  // if we waited on handle, `changes` must be ready
 
-        if (returned && changes_in_workdir_or_head(changes)) {
+        if (returned && changes_in_workdir_index_or_head(changes)) {
             fsmon_invalidate_idx(&events, &os, idx);
             continue;
         }
