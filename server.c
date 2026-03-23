@@ -379,20 +379,16 @@ typedef struct {
 
 #define WORK_BUF MAX_PATH
 
-static unsigned long gitstatus_thread_proc(void *_repo)
+static unsigned long gitstatus_thread_proc(void *_root)
 {
-    git_repository *repo = _repo;
-    const char *path = git_repository_workdir(repo);
-    assert(path != NULL);
-    assert(path[strlen(path) - 1] == '/');
-
+    git_buf *root = _root;
     StatusItem si = {0};
 
     // We don't use `git_repository_head` and the like because those show "what
     // is" and .git/HEAD shows "what will be if you perform a git action". Only
     // usefull before first git tree is created, maybe
     char buf[WORK_BUF];
-    int written = snprintf(buf, WORK_BUF, "%s.git/HEAD", path);
+    int written = snprintf(buf, WORK_BUF, "%s.git/HEAD", root->ptr);
     if (written < 0 || written >= WORK_BUF) return 1;
 
     FILE *head = _fsopen(buf, "rt", _SH_DENYNO);
@@ -440,6 +436,10 @@ branch_done:
                | GIT_STATUS_OPT_INCLUDE_UNREADABLE
     };
 
+    git_repository *repo = NULL;
+    int err = git_repository_open(&repo, root->ptr);
+    assert(!err);
+
     git_status_list *statuses = NULL;
     int error = git_status_list_new(&statuses, repo, &opts);
     if (error) return 3;
@@ -463,8 +463,6 @@ branch_done:
         // rs.ignored       += !!(entry->status & GIT_STATUS_IGNORED);
         rs.conflicted    += !!(entry->status & GIT_STATUS_CONFLICTED);
     }
-
-    git_status_list_free(statuses);
 
     char *signs[] = { "?", "+", "m", "x", "mv", "t", "u", /*"i",*/ "c" };
     int values[] = {
@@ -497,13 +495,11 @@ branch_done:
         p += written;
     }
 
-    int w = snprintf(g_fsmon_path, MAX_PATH, "%s", path);
+    int w = snprintf(g_fsmon_path, MAX_PATH, "%s", root->ptr);
     assert(w > 0 && w < MAX_PATH);
 
-    w = snprintf(si.workdir, MAX_PATH, "%s", path);
+    w = snprintf(si.workdir, MAX_PATH, "%s", root->ptr);
     assert(w > 0 && w < MAX_PATH);
-
-    git_repository_free(repo);
 
     static bool fsmon_created = false;
     if (!fsmon_created) {
@@ -518,6 +514,11 @@ branch_done:
 
     bool ret = status_cache_append(&si);
     assert(ret);
+
+    git_repository_free(repo);
+    git_status_list_free(statuses);
+    git_buf_dispose(root);
+    free(root);
 
     return 0;
 }
@@ -963,36 +964,40 @@ static unsigned short utf8len(const char *str)
 
 static void set_status_item(StatusItem *si, bool *has_git, const char *final_path)
 {
-    git_repository *repo = NULL;
-    int err = git_repository_open_ext(&repo, final_path, 0, NULL);
+    git_buf *root = malloc(sizeof(git_buf));
+    int err = git_repository_discover(root, final_path, 0, NULL);
     if (err) return;
 
-    const char *_workdir = git_repository_workdir(repo);
-    if (_workdir == NULL) return;
-    assert(_workdir[strlen(_workdir) - 1] == '/');
+    // some/path/.git/
+    char *x = strrchr(root->ptr, '.');
+    assert(x && x > root->ptr && x < root->ptr + root->size);
+    *x = 0;
+    // some/path/
 
     // I use this variable bc si.workdir is set only in gsthread for cache
     // control, maybe it can be removed if we do a two-phase cache add, but it
     // feels like too much
     *has_git = true;
 
-    char workdir[MAX_PATH];
-    errno_t et = strcpy_s(workdir, MAX_PATH, _workdir);
-    assert(!et);
-
-    StatusItem *_si = status_cache_get(workdir);
+    StatusItem *_si = status_cache_get(root->ptr);
     if (_si != NULL) {
         *si = *_si;
+        git_buf_dispose(root);
+        free(root);
         return;
     }
 
+    char workdir[MAX_PATH];
+    errno_t et = strcpy_s(workdir, MAX_PATH, root->ptr);
+    assert(!et);
+
     HANDLE thread = NULL;
-    bool free_repo_here = true;
+    bool root_given_to_thread = false;
     if (!get_running_thread(workdir, &thread)) {
-        thread = CreateThread(NULL, 0, gitstatus_thread_proc, repo, 0, NULL);
+        thread = CreateThread(NULL, 0, gitstatus_thread_proc, root, 0, NULL);
         bool ret = append_running_thread(workdir, thread);
         assert(ret);
-        free_repo_here = false;
+        root_given_to_thread = true;
     }
     assert(thread != NULL);
 
@@ -1033,7 +1038,10 @@ static void set_status_item(StatusItem *si, bool *has_git, const char *final_pat
             abort();
     }
 
-    if (free_repo_here) git_repository_free(repo);
+    if (root_given_to_thread) return;
+
+    git_buf_dispose(root);
+    free(root);
 }
 
 
