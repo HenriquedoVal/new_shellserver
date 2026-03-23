@@ -1,3 +1,6 @@
+///
+/// Includes
+
 #pragma comment(lib, "advapi32")
 #pragma comment(lib, "shlwapi")
 
@@ -36,9 +39,10 @@
 #include "common.c"
 
 
+/// Config/Extend
+
 #define GITSTATUS_TIMEOUT 100
 #define CMD_DUR_THRESHOLD 200
-#define CHANGES_SIZE 1024
 
 enum {
     HAS_C,
@@ -64,109 +68,7 @@ static SetGraphicsRendition extmapcolor[EXT_TOTAL] = {
 };
 
 
-// Return true if we don't have permission to list dir
-static bool set_extensions(const char *path, long *mask) {
-    static_assert(sizeof(*mask) * 8 >= EXT_TOTAL, "");
-
-    char path_glob[MAX_PATH];
-    int written = sprintf_s(path_glob, MAX_PATH, "%s\\*", path);
-    if (written <= 0 || written >= MAX_PATH) return false;
-
-    // PERF: FindFirstFileExW is the hottest spot
-    WIN32_FIND_DATAA fd;
-    HANDLE find = FindFirstFileExA(
-            path_glob,
-            FindExInfoBasic,
-            &fd,
-            FindExSearchNameMatch,
-            NULL,
-            FIND_FIRST_EX_LARGE_FETCH
-    );
-    if (find == INVALID_HANDLE_VALUE) {
-        if (GetLastError() == ERROR_ACCESS_DENIED) return true;
-        return false;
-    }
-
-    while (FindNextFileA(find, &fd)) {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) continue;
-
-        char *ext = strrchr(fd.cFileName, '.');
-        if (!ext) continue;
-        ext++;
-
-        for (int i = 0; i < EXT_TOTAL; ++i) {
-            if (_bittest(mask, i)) continue;
-
-            for (wchar_t j = 1; j <= *extensions[i][0]; ++j) {
-                if (strcmp(ext, extensions[i][j]) == 0) {
-                    _bittestandset(mask, i);
-                    break;
-                }
-            }
-        }
-    }
-    bool success = FindClose(find);
-    assert(success);
-    return false;
-}
-
-
-static bool set_valid_path(char *dest, const char *path)
-{
-    if (strlen(path) >= MAX_PATH)       return false;
-    if (PathGetDriveNumberA(path) < 0)  return false;
-    if (!PathFileExistsA(path))         return false;
-    if (!PathCanonicalizeA(dest, path)) return false;
-
-    PathRemoveBackslashA(dest);
-
-    return true;
-}
-
-// This function ASSUMES valid utf8. The right return value should be size_t
-// but this thing will run on DATA_CAPACITY max, which fits on u16
-static unsigned short utf8len(const char *str) {
-    unsigned short count = 0;
-    long c;
-
-    while ((c = (long)*str)) {
-        unsigned char msb = _bittest(&c, 7);
-        unsigned long idx;
-        _BitScanForward(&idx, c >> 4);
-
-        unsigned char add = (unsigned char)(1 + msb * (3 - idx));
-        count++;
-        str += add;
-    }
-
-    return count;
-}
-
-
-static void format_duration(char buf[7], unsigned duration) {
-    int written;
-    unsigned h, m, s;
-    s = duration / 1000;
-    m = s / 60;
-    h = m / 60;
-
-    if (h >= 100) return;
-    if (h) {
-        written = sprintf(buf, "%uh%um", h, m%60);
-        assert(written > 0 && written < 7);
-        return;
-    }
-
-    if (m) {
-        written = sprintf(buf, "%um%us", m, s%60);
-        assert(written > 0 && written < 7);
-        return;
-    }
-
-    written = sprintf(buf, "%.1fs", (float)duration/1000);
-    assert(written > 0 && written < 7);
-}
-
+/// Gitstatus thread management
 
 typedef struct {
     char workdir[MAX_PATH];
@@ -186,7 +88,8 @@ static void remove_running_thread_idx(int64_t idx)
 }
 
 
-static bool remove_running_thread(const char *workdir) {
+static bool remove_running_thread(const char *workdir)
+{
     for (unsigned i = 0; i < gitstatus_threads.count; ++i) {
         ThreadItem *ti = dynarr_at(&gitstatus_threads, i);
         assert(ti);
@@ -202,7 +105,8 @@ static bool remove_running_thread(const char *workdir) {
 }
 
 
-static bool get_running_thread(const char *workdir, HANDLE *t) {
+static bool get_running_thread(const char *workdir, HANDLE *t)
+{
     assert(workdir != NULL);
 
     for (unsigned i = 0; i < gitstatus_threads.count; ++i) {
@@ -227,7 +131,8 @@ static bool get_running_thread(const char *workdir, HANDLE *t) {
 }
 
 
-static bool append_running_thread(const char *workdir, HANDLE t) {
+static bool append_running_thread(const char *workdir, HANDLE t)
+{
     ThreadItem ti;
     ti.handle = t;
     errno_t err = strncpy_s(ti.workdir, MAX_PATH, workdir, _TRUNCATE);
@@ -239,22 +144,7 @@ static bool append_running_thread(const char *workdir, HANDLE t) {
 }
 
 
-typedef struct {
-    unsigned i_new;
-    unsigned i_modified;
-    unsigned i_deleted;
-    unsigned i_renamed;
-    unsigned i_typechange;
-    unsigned wt_new;
-    unsigned wt_modified;
-    unsigned wt_deleted;
-    unsigned wt_typechange;
-    unsigned wt_renamed;
-    unsigned wt_unreadable;
-    // unsigned ignored;
-    unsigned conflicted;
-} RetStatus;
-
+/// Gitstatus cache management
 
 // '?99999 +99999 m99999 x99999'
 #define STATUS_SIZE 28
@@ -266,40 +156,12 @@ typedef struct {
     char status[STATUS_SIZE];
 } StatusItem;
 
-
-static bool changes_in_workdir_index_or_head(char *buf)
-{
-    while (1) {
-        FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *)buf;
-
-        WCHAR *filename = fni->FileName;  // not null terminated
-        DWORD len = fni->FileNameLength;  // in bytes
-        filename[len / 2] = 0;
-
-        bool startswith_dotgit = memcmp(filename, L".git", 8)         == 0;
-        bool is_head           = memcmp(filename, L".git\\HEAD", 20)  == 0;
-        bool is_index          = memcmp(filename, L".git\\index", 22) == 0;
-
-        if (!startswith_dotgit || is_head || is_index) return true;
-
-        if (!fni->NextEntryOffset) break;
-        buf += fni->NextEntryOffset;
-    }
-
-    return false;
-}
-
-
-static HANDLE g_fsmon_thread = NULL;
-static HANDLE g_fsmon_event = NULL;
-static char g_fsmon_path[MAX_PATH];
-
 // PERF: linear search for long paths?
 static DynArr status_cache;
 static HANDLE g_status_cache_mutex = NULL;
 
-
-static StatusItem *status_cache_get(const char *workdir) {
+static StatusItem *status_cache_get(const char *workdir)
+{
     DWORD wait = WaitForSingleObject(g_status_cache_mutex, INFINITE);
     assert(wait == WAIT_OBJECT_0);
 
@@ -317,7 +179,9 @@ static StatusItem *status_cache_get(const char *workdir) {
     return si;
 }
 
-static bool status_cache_append(StatusItem *si) {
+
+static bool status_cache_append(StatusItem *si)
+{
     DWORD wait = WaitForSingleObject(g_status_cache_mutex, INFINITE);
     assert(wait == WAIT_OBJECT_0);
 
@@ -330,7 +194,9 @@ static bool status_cache_append(StatusItem *si) {
     return true;
 }
 
-static bool status_cache_remove(const char *workdir) {
+
+static bool status_cache_remove(const char *workdir)
+{
     DWORD wait = WaitForSingleObject(g_status_cache_mutex, INFINITE);
     assert(wait == WAIT_OBJECT_0);
 
@@ -349,6 +215,12 @@ static bool status_cache_remove(const char *workdir) {
     return removed;
 }
 
+
+/// Filesystem monitor. Invalidates gitstatus cache on fs events.
+
+static HANDLE g_fsmon_thread = NULL;
+static HANDLE g_fsmon_event = NULL;
+static char g_fsmon_path[MAX_PATH];
 
 static bool fsmon_invalidate_idx(DynArr *events, DynArr *os, unsigned idx)
 {
@@ -382,8 +254,33 @@ static bool fsmon_invalidate_idx(DynArr *events, DynArr *os, unsigned idx)
 }
 
 
-// Listen for changes on fs to invalidate StatusItem cache
-static unsigned long fsmon_daemon_thread_proc(void *param) {
+static bool changes_in_workdir_index_or_head(char *buf)
+{
+    while (1) {
+        FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *)buf;
+
+        WCHAR *filename = fni->FileName;  // not null terminated
+        DWORD len = fni->FileNameLength;  // in bytes
+        filename[len / 2] = 0;
+
+        bool startswith_dotgit = memcmp(filename, L".git", 8)         == 0;
+        bool is_head           = memcmp(filename, L".git\\HEAD", 20)  == 0;
+        bool is_index          = memcmp(filename, L".git\\index", 22) == 0;
+
+        if (!startswith_dotgit || is_head || is_index) return true;
+
+        if (!fni->NextEntryOffset) break;
+        buf += fni->NextEntryOffset;
+    }
+
+    return false;
+}
+
+
+#define CHANGES_SIZE 1024
+
+static unsigned long fsmon_daemon_thread_proc(void *param)
+{
     DynArr events = dynarr_init_ex(sizeof(HANDLE), 4);
     DynArr os     = dynarr_init_ex(sizeof(OVERLAPPED), 4);
     dynarr_append(&events, &g_fsmon_event);
@@ -462,9 +359,28 @@ static unsigned long fsmon_daemon_thread_proc(void *param) {
 }
 
 
+/// Thread proc for gitstatus
+
+typedef struct {
+    unsigned i_new;
+    unsigned i_modified;
+    unsigned i_deleted;
+    unsigned i_renamed;
+    unsigned i_typechange;
+    unsigned wt_new;
+    unsigned wt_modified;
+    unsigned wt_deleted;
+    unsigned wt_typechange;
+    unsigned wt_renamed;
+    unsigned wt_unreadable;
+    // unsigned ignored;
+    unsigned conflicted;
+} RetStatus;
+
 #define WORK_BUF MAX_PATH
 
-static unsigned long gitstatus_thread_proc(void *_repo) {
+static unsigned long gitstatus_thread_proc(void *_repo)
+{
     git_repository *repo = _repo;
     const char *path = git_repository_workdir(repo);
     assert(path != NULL);
@@ -607,6 +523,443 @@ branch_done:
 }
 
 
+/// Server functions
+
+#define MAX_REFPATH 30
+
+typedef struct {
+    char path[MAX_PATH];
+    char refpath[MAX_REFPATH];
+} PathItem;
+
+static DynArr refpath_cache;
+
+static bool set_valid_path(char *dest, const char *path)
+{
+    if (strlen(path) >= MAX_PATH)       return false;
+    if (PathGetDriveNumberA(path) < 0)  return false;
+    if (!PathFileExistsA(path))         return false;
+    if (!PathCanonicalizeA(dest, path)) return false;
+
+    PathRemoveBackslashA(dest);
+
+    return true;
+}
+
+
+static bool add_refpath(const char *final_path, const char *refpath)
+{
+    bool refpath_given = refpath != NULL;
+
+    // If path is just C, C:, or C:\ don't add
+    if (!refpath_given) {
+        char *last = strrchr(final_path, '\\');
+        if (last == NULL) return false;
+        refpath = last + 1;
+        if (!*refpath) return false;
+    }
+
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+        assert(pi->path);
+
+        if (refpath_given) {
+            if (strcmp(pi->refpath, refpath) == 0) return false;
+
+        } else {
+            if (strcmp(pi->path, final_path) == 0) return false;
+        }
+    }
+
+    PathItem pi;
+    errno_t err = strncpy_s(pi.path, MAX_PATH, final_path, _TRUNCATE);
+    assert(!err);
+
+    err = strncpy_s(pi.refpath, MAX_REFPATH, refpath, _TRUNCATE);
+    assert(!err || err == STRUNCATE);
+
+    dynarr_append(&refpath_cache, &pi);
+
+    return true;
+}
+
+
+static bool handle_refadd(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *path = g_ctx->transfer.data;
+    if (!path) return false;
+
+    size_t pathlen = strlen(path);
+    char *refpath = path + pathlen + 1;
+    if (!*refpath) refpath = NULL;
+
+    char final_path[MAX_PATH];
+    if (!set_valid_path(final_path, path)) return false;
+
+    return add_refpath(final_path, refpath);
+}
+
+
+static bool handle_refget(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *refpath = g_ctx->transfer.data;
+    if (!refpath) return false;
+
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+        if (_stricmp(pi->refpath, refpath) == 0) {
+            int written = sprintf(g_ctx->transfer.data, "%s", pi->path);
+            g_ctx->transfer.headers.data_size = written + 1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+static bool handle_refdel(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *what = g_ctx->transfer.data;
+    bool is_refpath = *what++;
+
+    char *target = what;
+    char final_path[MAX_PATH];
+    if (!is_refpath) {
+        if (!set_valid_path(final_path, what)) return false;
+        target = final_path;
+    }
+
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+
+        char *it = pi->path;
+        if (is_refpath) it = pi->refpath;
+
+        if (strcmp(it, target) == 0) {
+            bool ret = dynarr_remove(&refpath_cache, i);
+            assert(ret);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+static bool handle_move_down(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *refpath = g_ctx->transfer.data;
+
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+        if (_stricmp(pi->refpath, refpath)) continue;
+
+        PathItem save = *pi;
+        bool ret = dynarr_remove(&refpath_cache, i);
+        assert(ret);
+        dynarr_append(&refpath_cache, &save);
+
+        return true;
+    }
+
+    return false;
+}
+
+
+static bool handle_refgetall(void)
+{
+    static_assert(sizeof(int) == 4 && INT32_MAX > DATA_CAPACITY, "");
+    g_ctx->transfer.headers.data_size = 0;
+    int written = 0;
+    char *dest = g_ctx->transfer.data;
+    *dest = 0;
+
+    // It would take around 6k entries for this thing to not fit
+    // into one transfer. After years of using this I'm at 91...
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+
+        char *mask = "%s;";
+        if (i == refpath_cache.count - 1) mask = "%s";
+
+        int it_written = snprintf(dest + written, DATA_CAPACITY - written, mask, pi->refpath);
+        if (it_written < 0 || (unsigned)it_written > DATA_CAPACITY - written) return false;
+
+        written += it_written;
+    }
+
+    written++;
+    g_ctx->transfer.headers.data_size = written;
+    return true;
+}
+
+
+static FILE *get_cache_file(const char *mode)
+{
+    const char *const localappdata = getenv("localappdata");
+    if (localappdata == NULL) return NULL;
+
+    const char *filename = "ShellServer\\nss.dat";
+    char filepath[MAX_PATH];
+    int w = snprintf(filepath, MAX_PATH, "%s\\%s", localappdata, filename);
+    if (w < 0 || w >= MAX_PATH) return NULL;
+
+    FILE *file;
+    errno_t err = fopen_s(&file, filepath, mode);
+    if (err) return NULL;
+
+    return file;
+}
+
+
+static bool handle_save_cache(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+
+    FILE *file = get_cache_file("wb");
+    if (file == NULL) return false;
+
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+        assert(pi);
+
+        int w = fprintf(file, "%s;%s;", pi->refpath, pi->path);
+        if (w < 0) {
+            fclose(file);
+            return false;
+        }
+    }
+
+    fclose(file);
+    return true;
+}
+
+
+static bool load_fs_stored_cache(DynArr *da)
+{
+    char *content = g_ctx->transfer.data;
+    *content = 0;
+
+    FILE *file = get_cache_file("rb");
+    if (!file) return false;
+
+    while (!feof(file)) {
+        int r = fread(content, 1, DATA_CAPACITY, file);
+        if (ferror(file)) return false;
+        content[r] = 0;
+
+        // TODO: test this case
+        if (!feof(file)) {
+            int count = 0;
+            for (int i = 0; i < DATA_CAPACITY; ++i)
+                if (content[i] == ';')
+                    count++;
+
+            // ;refpath;path;ref_unterm\0
+            //              ^
+            char *last = strrchr(content, ';'); assert(last);
+
+            if (count % 2 != 0) {
+                // ;refpath\0path_unterm
+                // ^
+                *last = 0;
+                last = strrchr(content, ';'); assert(last);
+            }
+
+            last++;
+            *last = 0;
+            int err = fseek(file, (int64_t)last - (int64_t)content, SEEK_SET);
+            assert(!err);
+        }
+
+        PathItem pi;
+        char *tok, *ntok;
+
+        tok = strtok_s(content, ";", &ntok); assert(tok);
+
+        do {
+            int w = snprintf(pi.refpath, MAX_REFPATH, "%s", tok);
+            if (w < 0 || w >= MAX_REFPATH) abort();
+
+            tok = strtok_s(NULL, ";", &ntok); assert(tok);
+            w = snprintf(pi.path, MAX_PATH, "%s", tok);
+            if (w < 0 || w >= MAX_PATH) abort();
+
+            bool ret = dynarr_set_append(da, &pi);
+            assert(ret);
+
+        } while ((tok = strtok_s(NULL, ";", &ntok)));
+    }
+
+    fclose(file);
+    return true;
+}
+
+
+#define DUMP_MASK "%s: %s\n"
+
+static bool handle_dump_mem(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *dest = g_ctx->transfer.data;
+    *dest = 0;
+
+    // TODO: handle if all data doesn't fit DATA_CAPACITY
+    int written = 0;
+    for (unsigned i = 0; i < refpath_cache.count; ++i) {
+        PathItem *pi = dynarr_at(&refpath_cache, i);
+        assert(pi);
+
+        size_t available = DATA_CAPACITY - written;
+        int w = snprintf(dest, available, DUMP_MASK, pi->refpath, pi->path);
+        if (w < 0 || w >= available) return false;
+
+        written += w;
+        dest += w;
+    }
+
+    int null = 1;
+    g_ctx->transfer.headers.data_size = written + null;
+    return true;
+}
+
+
+static bool handle_dump_stored(void)
+{
+    g_ctx->transfer.headers.data_size = 0;
+    char *dest = g_ctx->transfer.data;
+    *dest = 0;
+
+    DynArr da = dynarr_init(sizeof(PathItem));
+    if (!load_fs_stored_cache(&da)) return false;
+
+    // TODO: handle if all data doesn't fit DATA_CAPACITY
+    int written = 0;
+    for (unsigned i = 0; i < da.count; ++i) {
+        PathItem *pi = dynarr_at(&da, i); assert(pi);
+
+        size_t available = DATA_CAPACITY - written;
+        int w = snprintf(dest, available, DUMP_MASK, pi->refpath, pi->path);
+        if (w < 0 || w >= available) return false;
+        written += w;
+        dest += w;
+    }
+
+    dynarr_free(&da);
+
+    int null = 1;
+    g_ctx->transfer.headers.data_size = written + null;
+    return true;
+}
+
+
+/// Prompt
+
+typedef struct {
+    char *text;
+    unsigned len;
+} Comp;
+
+static void format_duration(char buf[7], unsigned duration)
+{
+    int written;
+    unsigned h, m, s;
+    s = duration / 1000;
+    m = s / 60;
+    h = m / 60;
+
+    if (h >= 100) return;
+    if (h) {
+        written = sprintf(buf, "%uh%um", h, m%60);
+        assert(written > 0 && written < 7);
+        return;
+    }
+
+    if (m) {
+        written = sprintf(buf, "%um%us", m, s%60);
+        assert(written > 0 && written < 7);
+        return;
+    }
+
+    written = sprintf(buf, "%.1fs", (float)duration/1000);
+    assert(written > 0 && written < 7);
+}
+
+
+// Return true if we don't have permission to list dir
+static bool set_extensions(const char *path, long *mask)
+{
+    static_assert(sizeof(*mask) * 8 >= EXT_TOTAL, "");
+
+    char path_glob[MAX_PATH];
+    int written = sprintf_s(path_glob, MAX_PATH, "%s\\*", path);
+    if (written <= 0 || written >= MAX_PATH) return false;
+
+    // PERF: FindFirstFileExW is the hottest spot
+    WIN32_FIND_DATAA fd;
+    HANDLE find = FindFirstFileExA(
+            path_glob,
+            FindExInfoBasic,
+            &fd,
+            FindExSearchNameMatch,
+            NULL,
+            FIND_FIRST_EX_LARGE_FETCH
+    );
+    if (find == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_ACCESS_DENIED) return true;
+        return false;
+    }
+
+    while (FindNextFileA(find, &fd)) {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)) continue;
+
+        char *ext = strrchr(fd.cFileName, '.');
+        if (!ext) continue;
+        ext++;
+
+        for (int i = 0; i < EXT_TOTAL; ++i) {
+            if (_bittest(mask, i)) continue;
+
+            for (wchar_t j = 1; j <= *extensions[i][0]; ++j) {
+                if (strcmp(ext, extensions[i][j]) == 0) {
+                    _bittestandset(mask, i);
+                    break;
+                }
+            }
+        }
+    }
+    bool success = FindClose(find);
+    assert(success);
+    return false;
+}
+
+
+// This function ASSUMES valid utf8. The right return value should be size_t
+// but this thing will run on DATA_CAPACITY max, which fits on u16
+static unsigned short utf8len(const char *str)
+{
+    unsigned short count = 0;
+    long c;
+
+    while ((c = (long)*str)) {
+        unsigned char msb = _bittest(&c, 7);
+        unsigned long idx;
+        _BitScanForward(&idx, c >> 4);
+
+        unsigned char add = (unsigned char)(1 + msb * (3 - idx));
+        count++;
+        str += add;
+    }
+
+    return count;
+}
+
 
 static void set_status_item(StatusItem *si, bool *has_git, const char *final_path)
 {
@@ -684,58 +1037,6 @@ static void set_status_item(StatusItem *si, bool *has_git, const char *final_pat
 }
 
 
-#define MAX_REFPATH 30
-
-typedef struct {
-    char path[MAX_PATH];
-    char refpath[MAX_REFPATH];
-} PathItem;
-
-static DynArr refpath_cache;
-
-
-static bool add_refpath(const char *final_path, const char *refpath)
-{
-    bool refpath_given = refpath != NULL;
-
-    // If path is just C, C:, or C:\ don't add
-    if (!refpath_given) {
-        char *last = strrchr(final_path, '\\');
-        if (last == NULL) return false;
-        refpath = last + 1;
-        if (!*refpath) return false;
-    }
-
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-        assert(pi->path);
-
-        if (refpath_given) {
-            if (strcmp(pi->refpath, refpath) == 0) return false;
-
-        } else {
-            if (strcmp(pi->path, final_path) == 0) return false;
-        }
-    }
-
-    PathItem pi;
-    errno_t err = strncpy_s(pi.path, MAX_PATH, final_path, _TRUNCATE);
-    assert(!err);
-
-    err = strncpy_s(pi.refpath, MAX_REFPATH, refpath, _TRUNCATE);
-    assert(!err || err == STRUNCATE);
-
-    dynarr_append(&refpath_cache, &pi);
-
-    return true;
-}
-
-
-typedef struct {
-    char *text;
-    unsigned len;
-} Comp;
-
 static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...)
 {
     Comp ret = { .text = *where };
@@ -771,7 +1072,8 @@ static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...
 } while (0)
 
 
-static bool handle_prompt(void) {
+static bool handle_prompt(void)
+{
     unsigned short data_size = g_ctx->transfer.headers.data_size;
     g_ctx->transfer.headers.data_size = 0;
     if (data_size > sizeof(PromptData) + MAX_PATH - 3) return false;  // -3: \\*\0
@@ -958,277 +1260,8 @@ static bool handle_prompt(void) {
 #undef push_color
 #undef push_text
 
-static bool handle_refadd(void) {
-    g_ctx->transfer.headers.data_size = 0;
-    char *path = g_ctx->transfer.data;
-    if (!path) return false;
 
-    size_t pathlen = strlen(path);
-    char *refpath = path + pathlen + 1;
-    if (!*refpath) refpath = NULL;
-
-    char final_path[MAX_PATH];
-    if (!set_valid_path(final_path, path)) return false;
-
-    return add_refpath(final_path, refpath);
-}
-
-
-static bool handle_refget(void) {
-    g_ctx->transfer.headers.data_size = 0;
-    char *refpath = g_ctx->transfer.data;
-    if (!refpath) return false;
-
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-        if (_stricmp(pi->refpath, refpath) == 0) {
-            int written = sprintf(g_ctx->transfer.data, "%s", pi->path);
-            g_ctx->transfer.headers.data_size = written + 1;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-static bool handle_refdel(void) {
-    g_ctx->transfer.headers.data_size = 0;
-    char *what = g_ctx->transfer.data;
-    bool is_refpath = *what++;
-
-    char *target = what;
-    char final_path[MAX_PATH];
-    if (!is_refpath) {
-        if (!set_valid_path(final_path, what)) return false;
-        target = final_path;
-    }
-
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-
-        char *it = pi->path;
-        if (is_refpath) it = pi->refpath;
-
-        if (strcmp(it, target) == 0) {
-            bool ret = dynarr_remove(&refpath_cache, i);
-            assert(ret);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-static bool handle_move_down(void)
-{
-    g_ctx->transfer.headers.data_size = 0;
-    char *refpath = g_ctx->transfer.data;
-
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-        if (_stricmp(pi->refpath, refpath)) continue;
-
-        PathItem save = *pi;
-        bool ret = dynarr_remove(&refpath_cache, i);
-        assert(ret);
-        dynarr_append(&refpath_cache, &save);
-
-        return true;
-    }
-
-    return false;
-}
-
-
-static bool handle_refgetall(void)
-{
-    static_assert(sizeof(int) == 4 && INT32_MAX > DATA_CAPACITY, "");
-    g_ctx->transfer.headers.data_size = 0;
-    int written = 0;
-    char *dest = g_ctx->transfer.data;
-    *dest = 0;
-
-    // It would take around 6k entries for this thing to not fit
-    // into one transfer. After years of using this I'm at 91...
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-
-        char *mask = "%s;";
-        if (i == refpath_cache.count - 1) mask = "%s";
-
-        int it_written = snprintf(dest + written, DATA_CAPACITY - written, mask, pi->refpath);
-        if (it_written < 0 || (unsigned)it_written > DATA_CAPACITY - written) return false;
-
-        written += it_written;
-    }
-
-    written++;
-    g_ctx->transfer.headers.data_size = written;
-    return true;
-}
-
-
-#define DUMP_MASK "%s: %s\n"
-
-static bool handle_dump_mem(void)
-{
-    g_ctx->transfer.headers.data_size = 0;
-    char *dest = g_ctx->transfer.data;
-    *dest = 0;
-
-    // TODO: handle if all data doesn't fit DATA_CAPACITY
-    int written = 0;
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-        assert(pi);
-
-        size_t available = DATA_CAPACITY - written;
-        int w = snprintf(dest, available, DUMP_MASK, pi->refpath, pi->path);
-        if (w < 0 || w >= available) return false;
-
-        written += w;
-        dest += w;
-    }
-
-    int null = 1;
-    g_ctx->transfer.headers.data_size = written + null;
-    return true;
-}
-
-
-static FILE *get_cache_file(const char *mode)
-{
-    const char *const localappdata = getenv("localappdata");
-    if (localappdata == NULL) return NULL;
-
-    const char *filename = "ShellServer\\nss.dat";
-    char filepath[MAX_PATH];
-    int w = snprintf(filepath, MAX_PATH, "%s\\%s", localappdata, filename);
-    if (w < 0 || w >= MAX_PATH) return NULL;
-
-    FILE *file;
-    errno_t err = fopen_s(&file, filepath, mode);
-    if (err) return NULL;
-
-    return file;
-}
-
-
-static bool handle_save_cache(void)
-{
-    g_ctx->transfer.headers.data_size = 0;
-
-    FILE *file = get_cache_file("wb");
-    if (file == NULL) return false;
-
-    for (unsigned i = 0; i < refpath_cache.count; ++i) {
-        PathItem *pi = dynarr_at(&refpath_cache, i);
-        assert(pi);
-
-        int w = fprintf(file, "%s;%s;", pi->refpath, pi->path);
-        if (w < 0) {
-            fclose(file);
-            return false;
-        }
-    }
-
-    fclose(file);
-    return true;
-}
-
-
-static bool load_fs_stored_cache(DynArr *da)
-{
-    char *content = g_ctx->transfer.data;
-    *content = 0;
-
-    FILE *file = get_cache_file("rb");
-    if (!file) return false;
-
-    while (!feof(file)) {
-        int r = fread(content, 1, DATA_CAPACITY, file);
-        if (ferror(file)) return false;
-        content[r] = 0;
-
-        // TODO: test this case
-        if (!feof(file)) {
-            int count = 0;
-            for (int i = 0; i < DATA_CAPACITY; ++i)
-                if (content[i] == ';')
-                    count++;
-
-            // ;refpath;path;ref_unterm\0
-            //              ^
-            char *last = strrchr(content, ';'); assert(last);
-
-            if (count % 2 != 0) {
-                // ;refpath\0path_unterm
-                // ^
-                *last = 0;
-                last = strrchr(content, ';'); assert(last);
-            }
-
-            last++;
-            *last = 0;
-            int err = fseek(file, (int64_t)last - (int64_t)content, SEEK_SET);
-            assert(!err);
-        }
-
-        PathItem pi;
-        char *tok, *ntok;
-
-        tok = strtok_s(content, ";", &ntok); assert(tok);
-
-        do {
-            int w = snprintf(pi.refpath, MAX_REFPATH, "%s", tok);
-            if (w < 0 || w >= MAX_REFPATH) abort();
-
-            tok = strtok_s(NULL, ";", &ntok); assert(tok);
-            w = snprintf(pi.path, MAX_PATH, "%s", tok);
-            if (w < 0 || w >= MAX_PATH) abort();
-
-            bool ret = dynarr_set_append(da, &pi);
-            assert(ret);
-
-        } while ((tok = strtok_s(NULL, ";", &ntok)));
-    }
-
-    fclose(file);
-    return true;
-}
-
-
-static bool handle_dump_stored(void)
-{
-    g_ctx->transfer.headers.data_size = 0;
-    char *dest = g_ctx->transfer.data;
-    *dest = 0;
-
-    DynArr da = dynarr_init(sizeof(PathItem));
-    if (!load_fs_stored_cache(&da)) return false;
-
-    // TODO: handle if all data doesn't fit DATA_CAPACITY
-    int written = 0;
-    for (unsigned i = 0; i < da.count; ++i) {
-        PathItem *pi = dynarr_at(&da, i); assert(pi);
-
-        size_t available = DATA_CAPACITY - written;
-        int w = snprintf(dest, available, DUMP_MASK, pi->refpath, pi->path);
-        if (w < 0 || w >= available) return false;
-        written += w;
-        dest += w;
-    }
-
-    dynarr_free(&da);
-
-    int null = 1;
-    g_ctx->transfer.headers.data_size = written + null;
-    return true;
-}
-
+/// Entry point
 
 #ifdef NDEBUG
 int WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int showcmd)
