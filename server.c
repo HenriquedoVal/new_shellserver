@@ -537,10 +537,10 @@ static DynArr refpath_cache;
 
 static bool set_valid_path(char *dest, const char *path)
 {
-    if (strlen(path) >= MAX_PATH)       return false;
-    if (PathGetDriveNumberA(path) < 0)  return false;
-    if (!PathFileExistsA(path))         return false;
-    if (!PathCanonicalizeA(dest, path)) return false;
+    if (strlen(path) >= MAX_PATH ||
+        PathGetDriveNumberA(path) < 0 ||
+        !PathCanonicalizeA(dest, path)
+    ) return false;
 
     PathRemoveBackslashA(dest);
 
@@ -596,7 +596,8 @@ static bool handle_refadd(void)
     if (!*refpath) refpath = NULL;
 
     char final_path[MAX_PATH];
-    if (!set_valid_path(final_path, path)) return false;
+    if (!set_valid_path(final_path, path) || !PathFileExistsA(final_path))
+        return false;
 
     return add_refpath(final_path, refpath);
 }
@@ -630,7 +631,7 @@ static bool handle_refdel(void)
     char *target = what;
     char final_path[MAX_PATH];
     if (!is_refpath) {
-        if (!set_valid_path(final_path, what)) return false;
+        if (!set_valid_path(final_path, what) || !PathFileExistsA(final_path)) return false;
         target = final_path;
     }
 
@@ -893,14 +894,13 @@ static void format_duration(char buf[7], unsigned duration)
 }
 
 
-// Return true if we don't have permission to list dir
-static bool set_extensions(const char *path, long *mask)
+static void set_extensions(const char *path, long *mask, bool *access_denied)
 {
     static_assert(sizeof(*mask) * 8 >= EXT_TOTAL, "");
 
     char path_glob[MAX_PATH];
     int written = sprintf_s(path_glob, MAX_PATH, "%s\\*", path);
-    if (written <= 0 || written >= MAX_PATH) return false;
+    if (written <= 0 || written >= MAX_PATH) return;
 
     // PERF: FindFirstFileExW is the hottest spot
     WIN32_FIND_DATAA fd;
@@ -913,8 +913,8 @@ static bool set_extensions(const char *path, long *mask)
             FIND_FIRST_EX_LARGE_FETCH
     );
     if (find == INVALID_HANDLE_VALUE) {
-        if (GetLastError() == ERROR_ACCESS_DENIED) return true;
-        return false;
+        if (GetLastError() == ERROR_ACCESS_DENIED) *access_denied = true;
+        return;
     }
 
     while (FindNextFileA(find, &fd)) {
@@ -935,9 +935,9 @@ static bool set_extensions(const char *path, long *mask)
             }
         }
     }
+
     bool success = FindClose(find);
     assert(success);
-    return false;
 }
 
 
@@ -1094,17 +1094,24 @@ static bool handle_prompt(void)
     char final_path[MAX_PATH];
     if (!set_valid_path(final_path, pd->path)) return false;
 
+    long extmask = 0;
+    bool access_denied = false;
+    bool file_exists = PathFileExistsA(final_path);
+
+    // We need to check access_denied again inside `set_extensions` because we
+    // may have permission to see the path, but not to list it. And we will
+    // treat both cases the same way
+    if (file_exists) set_extensions(final_path, &extmask, &access_denied);
+    else access_denied = GetLastError() == ERROR_ACCESS_DENIED;
+
     const char *const userprofile = getenv("USERPROFILE");
     if (userprofile == NULL) return false;
-
-    if (_stricmp(userprofile, final_path)) add_refpath(final_path, NULL);
+    if (file_exists && _stricmp(userprofile, final_path))
+        add_refpath(final_path, NULL);
 
     StatusItem si = {0};
     bool has_git = false;
     set_status_item(&si, &has_git, final_path);
-
-    long extmask = 0;
-    bool access_denied = set_extensions(final_path, &extmask);
 
     // Feels dumb to alloc more when we have lots of unused space in
     // g_ctx.transfer.data (DATA_CAPACITY: 65507 - headers)
@@ -1214,8 +1221,12 @@ static bool handle_prompt(void)
     assert(left_size + empty + right_size == screen_width);
 
     /// Now render everything
+    if (access_denied) push_color(SGR_BF_RED);
+    else push_color(SGR_BF_CYAN);
+    push_text("%s ", icon.text);
+
     push_color(SGR_BF_CYAN);
-    push_text("%s %s", icon.text, render_path.text);
+    push_text("%s", render_path.text);
 
     if (git.len) {
         push_color(SGR_BF_RED);
