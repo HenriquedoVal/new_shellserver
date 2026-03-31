@@ -44,27 +44,98 @@
 #define GITSTATUS_TIMEOUT 100
 #define CMD_DUR_THRESHOLD 200
 
+// I'm using top 17 most used programming languages found somewhere on net
 enum {
     HAS_C,
     HAS_CPP,
+    HAS_JS,
+    HAS_HTML,
+    HAS_CSS,
+    HAS_PY,
+    HAS_TS,
+    HAS_JAVA,
+    HAS_CSHARP,
+    HAS_BASH,
+    HAS_PWSH,
+    HAS_PHP,
+    HAS_GO,
+    HAS_RUST,
+    HAS_KOTLIN,
+    HAS_LUA,
+    HAS_ASM,
     EXT_TOTAL
 };
 
 #define MAX_EXT_STR_SIZE 4
-// TODO: this size as first element is dumb
-static char *extensions[EXT_TOTAL][MAX_EXT_STR_SIZE] = {
-    [HAS_C]   = {"\x02" , "c", "h"},
-    [HAS_CPP] = {"\x03" , "cpp", "hh", "hpp"}
+
+typedef struct {
+    int count;
+    char *ext_name[MAX_EXT_STR_SIZE];
+} ExtEntry;
+
+static ExtEntry extensions[EXT_TOTAL] = {
+    [HAS_C]      = { .count = 2, .ext_name = { "c", "h" }},
+
+    [HAS_CPP]    = { 3, { "cpp", "hh", "hpp"        }},
+    [HAS_JS]     = { 3, { "js", "cjs", "mjs"        }},
+    [HAS_HTML]   = { 1, { "html"                    }},
+    [HAS_CSS]    = { 1, { "css"                     }},
+    [HAS_PY]     = { 4, { "py", "pyw", "pyc", "pyd" }},
+    [HAS_TS]     = { 1, { "ts"                      }},
+    [HAS_JAVA]   = { 1, { "java"                    }},
+    [HAS_CSHARP] = { 1, { "cs"                      }},
+    [HAS_BASH]   = { 1, { "sh"                      }},
+    [HAS_PWSH]   = { 3, { "ps1", "psd1", "psm1"     }},
+    [HAS_PHP]    = { 1, { "php"                     }},
+    [HAS_GO]     = { 1, { "go"                      }},
+    [HAS_RUST]   = { 2, { "rs", "rlib"              }},
+    [HAS_KOTLIN] = { 3, { "kt", "ktm", "kts"        }},
+    [HAS_LUA]    = { 1, { "lua"                     }},
+    [HAS_ASM]    = { 2, { "asm", "s"                }},
 };
+
 
 static char *extmapsign[EXT_TOTAL] = {
-    [HAS_C]   = "",
-    [HAS_CPP] = "",
+
+                          //   dev | seti | md | custom
+    [HAS_C]      = "",   //              󰙱     
+    [HAS_CPP]    = "",   //               󰙲     
+    [HAS_JS]     = "",   //              󰌞
+    [HAS_HTML]   = "",   //              󰌝 
+    [HAS_CSS]    = "󰌜",   //              󰌜     
+    [HAS_PY]     = "",   //              󰌠
+    [HAS_TS]     = "",   //              󰛦
+    [HAS_JAVA]   = "󰬷",   //              󰬷
+    [HAS_CSHARP] = "󰌛",   //               󰌛
+    [HAS_BASH]   = "",   //               󱆃
+    [HAS_PWSH]   = "󰨊",   //              󰨊
+    [HAS_PHP]    = "󰌟",   //              󰌟
+    [HAS_GO]     = "",   //              󰟓     
+    [HAS_RUST]   = "󱘗",   //              󱘗
+    [HAS_KOTLIN] = "󱈙",   //              󱈙     
+    [HAS_LUA]    = "󰢱",   //              󰢱
+    [HAS_ASM]    = ""    //                     
 };
 
+
 static SetGraphicsRendition extmapcolor[EXT_TOTAL] = {
-    [HAS_C]   = SGR_F_BLUE,
-    [HAS_CPP] = SGR_F_BLUE
+    [HAS_C]      = SGR_F_BLUE,
+    [HAS_CPP]    = SGR_F_BLUE,
+    [HAS_JS]     = SGR_F_YELLOW,
+    [HAS_HTML]   = SGR_F_RED,
+    [HAS_CSS]    = SGR_F_BLUE,
+    [HAS_PY]     = SGR_F_YELLOW,
+    [HAS_TS]     = SGR_F_BLUE,
+    [HAS_JAVA]   = SGR_F_RED,
+    [HAS_CSHARP] = SGR_F_BLUE,
+    [HAS_BASH]   = SGR_F_WHITE,
+    [HAS_PWSH]   = SGR_F_BLUE,
+    [HAS_PHP]    = SGR_F_BLUE,
+    [HAS_GO]     = SGR_F_BLUE,
+    [HAS_RUST]   = SGR_F_RED,
+    [HAS_KOTLIN] = SGR_F_GREEN,
+    [HAS_LUA]    = SGR_F_BLUE,
+    [HAS_ASM]    = SGR_F_WHITE
 };
 
 
@@ -927,8 +998,8 @@ static void set_extensions(const char *path, long *mask, bool *access_denied)
         for (int i = 0; i < EXT_TOTAL; ++i) {
             if (_bittest(mask, i)) continue;
 
-            for (wchar_t j = 1; j <= *extensions[i][0]; ++j) {
-                if (strcmp(ext, extensions[i][j]) == 0) {
+            for (wchar_t j = 0; j < extensions[i].count; ++j) {
+                if (strcmp(ext, extensions[i].ext_name[j]) == 0) {
                     _bittestandset(mask, i);
                     break;
                 }
