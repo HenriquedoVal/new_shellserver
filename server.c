@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <share.h>
+#include <wchar.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -101,7 +102,7 @@ static char *extmapsign[EXT_TOTAL] = {
     [HAS_C]      = "",   //              󰙱     
     [HAS_CPP]    = "",   //               󰙲     
     [HAS_JS]     = "",   //              󰌞
-    [HAS_HTML]   = "",   //              󰌝 
+    [HAS_HTML]   = "",   //              󰌝
     [HAS_CSS]    = "󰌜",   //              󰌜     
     [HAS_PY]     = "",   //              󰌠
     [HAS_TS]     = "",   //              󰛦
@@ -291,15 +292,14 @@ static bool status_cache_remove(const char *workdir)
 
 static HANDLE g_fsmon_thread = NULL;
 static HANDLE g_fsmon_event = NULL;
-static char g_fsmon_path[MAX_PATH];
+static char g_fsmon_workdir[MAX_PATH];
+static wchar_t g_fsmon_remote[MAX_PATH];
 
-static bool fsmon_invalidate_idx(DynArr *events, DynArr *os, unsigned idx)
+static bool fsmon_invalidate_idx(DynArr *events, DynArr *os, DynArr *remotes, unsigned idx)
 {
     assert(idx >= 1 && "First event is g_fsmon_event, not dir");
 
-    OVERLAPPED *o = dynarr_at(os, idx);   assert(o != NULL);
     HANDLE *dir = dynarr_at(events, idx); assert(dir != NULL);
-
     char path[MAX_PATH];
     if (!GetFinalPathNameByHandleA(*dir, path, MAX_PATH, FILE_NAME_OPENED))
         return false;
@@ -320,12 +320,14 @@ static bool fsmon_invalidate_idx(DynArr *events, DynArr *os, unsigned idx)
     assert(ret);
     ret = dynarr_remove(os, idx);
     assert(ret);
+    ret = dynarr_remove(remotes, idx);
+    assert(ret);
 
     return true;
 }
 
 
-static bool changes_in_workdir_index_or_head(char *buf)
+static bool changes_invalidate(char *buf, WCHAR *remote_path)
 {
     while (1) {
         FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *)buf;
@@ -337,8 +339,9 @@ static bool changes_in_workdir_index_or_head(char *buf)
         bool startswith_dotgit = memcmp(filename, L".git", 8)         == 0;
         bool is_head           = memcmp(filename, L".git\\HEAD", 20)  == 0;
         bool is_index          = memcmp(filename, L".git\\index", 22) == 0;
+        bool is_remote         = wcscmp(filename, remote_path)        == 0;
 
-        if (!startswith_dotgit || is_head || is_index) return true;
+        if (!startswith_dotgit || is_head || is_index || is_remote) return true;
 
         if (!fni->NextEntryOffset) break;
         buf += fni->NextEntryOffset;
@@ -352,12 +355,14 @@ static bool changes_in_workdir_index_or_head(char *buf)
 
 static unsigned long fsmon_daemon_thread_proc(void *param)
 {
-    DynArr events = dynarr_init_ex(sizeof(HANDLE), 4);
-    DynArr os     = dynarr_init_ex(sizeof(OVERLAPPED), 4);
+    DynArr events  = dynarr_init_ex(sizeof(HANDLE), 4);
+    DynArr os      = dynarr_init_ex(sizeof(OVERLAPPED), 4);
+    DynArr remotes = dynarr_init_ex(sizeof(WCHAR) * MAX_PATH, 4);
     dynarr_append(&events, &g_fsmon_event);
-    dynarr_append_zeroed(&os); // The first event doesn't take an overlapped struct
+    dynarr_append_zeroed(&os);
+    dynarr_append_zeroed(&remotes);
 
-    DWORD filter = 
+    DWORD filter =
         FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
         // | FILE_NOTIFY_CHANGE_SIZE
@@ -373,7 +378,7 @@ static unsigned long fsmon_daemon_thread_proc(void *param)
         if (idx >= events.count) return 1;
 
         if (idx == 0) {
-            if (*g_fsmon_path == 0) {
+            if (*g_fsmon_workdir == 0) {
                 for (unsigned i = 0; i < events.count; ++i) {
                     HANDLE *h = dynarr_at(&events, i);
                     ret = CloseHandle(*h);
@@ -384,11 +389,13 @@ static unsigned long fsmon_daemon_thread_proc(void *param)
                 break;
             }
 
-            if (events.count == MAXIMUM_WAIT_OBJECTS)
-                fsmon_invalidate_idx(&events, &os, 1);
+            if (events.count == MAXIMUM_WAIT_OBJECTS) {
+                ret = fsmon_invalidate_idx(&events, &os, &remotes, 1);
+                assert(ret);
+            }
 
             HANDLE dir = CreateFileA(
-                    g_fsmon_path,
+                    g_fsmon_workdir,
                     FILE_LIST_DIRECTORY,
                     FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
                     NULL,
@@ -404,6 +411,7 @@ static unsigned long fsmon_daemon_thread_proc(void *param)
             assert(ret);
 
             dynarr_append(&events, &dir);
+            dynarr_append(&remotes, g_fsmon_remote);
             continue;
         }
 
@@ -416,8 +424,11 @@ static unsigned long fsmon_daemon_thread_proc(void *param)
         ret = GetOverlappedResult(*dir, o, &returned, false);
         assert(ret);  // if we waited on handle, `changes` must be ready
 
-        if (returned && changes_in_workdir_index_or_head(changes)) {
-            fsmon_invalidate_idx(&events, &os, idx);
+        WCHAR *remote_path = dynarr_at(&remotes, idx);
+        assert(remote_path);
+        if (returned && changes_invalidate(changes, remote_path)) {
+            ret = fsmon_invalidate_idx(&events, &os, &remotes, idx);
+            assert(ret);
             continue;
         }
 
@@ -454,47 +465,37 @@ static unsigned long gitstatus_thread_proc(void *_root)
 {
     git_buf *root = _root;
     StatusItem si = {0};
+    int w;
 
-    // We don't use `git_repository_head` and the like because those show "what
-    // is" and .git/HEAD shows "what will be if you perform a git action". Only
-    // usefull before first git tree is created, maybe
-    char buf[WORK_BUF];
-    int written = snprintf(buf, WORK_BUF, "%s.git/HEAD", root->ptr);
-    if (written < 0 || written >= WORK_BUF) return 1;
+    git_repository *repo = NULL;
+    int error = git_repository_open(&repo, root->ptr);
+    assert(!error);
 
-    FILE *head = _fsopen(buf, "rt", _SH_DENYNO);
-    if (head == NULL) goto branch_done;
+    git_reference *head = NULL;
+    error = git_reference_lookup(&head, repo, "HEAD");
+    assert(!error);
 
-    // ref: refs/heads/master
-    // The first call will set `buf` to "ref:"
-    int vars_set = fscanf_s(head, "%s", buf, WORK_BUF);
-    if (vars_set <= 0) goto branch_done_close;
+    const char *branch = NULL;
 
-    // The second will set to "refs/heads/master". If head is only the hash,
-    // this call will return 0 and buf will not be modified
-    fscanf_s(head, "%s", buf, WORK_BUF);
-
-    const char *branch;
-    if (strstr(buf, "refs") == buf) {
-        branch = strrchr(buf, '/') + 1;
+    if (git_repository_head_detached(repo)) {
+        const git_oid *det = git_reference_target(head);
+        char buf[GIT_OID_SHA1_HEXSIZE + 1] = {0};
+        char *ret = git_oid_tostr(buf, GIT_OID_SHA1_HEXSIZE + 1, det);
+        w = snprintf(si.branch, sizeof(si.branch), "detached at %s", buf);
+        assert(w > 0);
     } else {
-        buf[7] = 0;
-        written = snprintf(buf + 8, WORK_BUF - 8, "detached at %s", buf);
-        if (written <= 0 || written >= WORK_BUF - 8)
-            goto branch_done_close;
-        branch = buf + 8;
+        assert(git_reference_type(head) == GIT_REFERENCE_SYMBOLIC);
+        const char *target = git_reference_symbolic_target(head);
+        assert(target);
+        branch = strrchr(target, '/');
+        branch++;
+
+        w = snprintf(si.branch, sizeof(si.branch), "%s", branch);
+        assert(w > 0);
+        if (w > sizeof(si.branch))
+            for (int i = 1; i < 4; i++)
+                si.branch[BRANCH_SIZE - i] = '.';
     }
-
-    written = snprintf(si.branch, BRANCH_SIZE, "%s", branch);
-    if (written <= 0) return 2;
-
-    // Put ellipsis there to indicate that the branch is truncated
-    if (written >= BRANCH_SIZE)
-        for (int i = 1; i < 4; i++) si.branch[BRANCH_SIZE - i] = '.';
-
-branch_done_close:
-    fclose(head);
-branch_done:
 
     // TODO: Check if updating the index is a good idea
     git_status_options opts = {
@@ -507,12 +508,8 @@ branch_done:
                | GIT_STATUS_OPT_INCLUDE_UNREADABLE
     };
 
-    git_repository *repo = NULL;
-    int err = git_repository_open(&repo, root->ptr);
-    assert(!err);
-
     git_status_list *statuses = NULL;
-    int error = git_status_list_new(&statuses, repo, &opts);
+    error = git_status_list_new(&statuses, repo, &opts);
     if (error) return 3;
 
     RetStatus rs = {0};
@@ -555,19 +552,64 @@ branch_done:
 
         if (*si.status) { *p = ' '; p++; }
         size_t available = STATUS_SIZE - ((size_t)p - (size_t)si.status);
-        int written = snprintf(p, available, "%s%i", signs[i], values[i]);
-        if (written < 0) return 4;
+        w = snprintf(p, available, "%s%i", signs[i], values[i]);
+        if (w < 0) return 4;
 
-        if (written > available) {
+        if (w > available) {
             for (int i = 1; i < 4; i++)
                 si.status[STATUS_SIZE - i] = '.';
             break;
         }
-        p += written;
+        p += w;
     }
 
-    int w = snprintf(g_fsmon_path, MAX_PATH, "%s", root->ptr);
+    w = snprintf(g_fsmon_workdir, MAX_PATH, "%s", root->ptr);
     assert(w > 0 && w < MAX_PATH);
+
+    *g_fsmon_remote = 0;
+
+    git_remote *rm = NULL;
+    git_strarray arr = {0};
+
+    // TODO: Only report sync if there is nothing else? It is a useful thing to
+    // know all the times. Check how expensive it is.
+    if (p == si.status && branch && !git_remote_list(&arr, repo) && arr.count) {
+        git_oid head;
+        error = git_reference_name_to_id(&head, repo, "HEAD");
+        if (error) goto out_label;
+        char hash_head[GIT_OID_SHA1_HEXSIZE + 1] = {0};
+        char *ret = git_oid_tostr(hash_head, GIT_OID_SHA1_HEXSIZE + 1, &head);
+        if (ret == NULL) goto out_label;
+
+        // TODO: Is it safe to presume `arr.strings[0]` is ALWAYS what we want?
+        char refname[MAX_PATH];
+        w = sprintf(refname, "refs/remotes/%s/%s", arr.strings[0], branch);
+        assert(w > 0);
+
+        git_oid remote;
+        error = git_reference_name_to_id(&remote, repo, refname);
+        if (error) goto out_label;
+        char hash_remote[GIT_OID_SHA1_HEXSIZE + 1] = {0};
+        ret = git_oid_tostr(hash_remote, GIT_OID_SHA1_HEXSIZE + 1, &remote);
+        if (ret == NULL) goto out_label;
+
+        if (strcmp(hash_head, hash_remote) == 0) goto out_label;
+        strcat(si.status, "󰶣");
+
+        // Construct path for fsmon to listen
+        wchar_t refname_wide[MAX_PATH];
+        w = MultiByteToWideChar(CP_UTF8, 0, refname, -1, refname_wide, MAX_PATH);
+        assert(w > 0);
+        wchar_t remote_path[MAX_PATH];
+        w = swprintf(remote_path, sizeof(remote_path), L".git/%s", refname_wide);
+        assert(w > 0);
+
+        wchar_t *cpy = wcscpy(g_fsmon_remote, remote_path);
+        assert(cpy);
+        wchar_t *p = cpy;
+        while (*p) { if (*p == '/') *p = '\\'; p++; }
+    }
+out_label:
 
     w = snprintf(si.workdir, MAX_PATH, "%s", root->ptr);
     assert(w > 0 && w < MAX_PATH);
@@ -586,6 +628,9 @@ branch_done:
     bool ret = status_cache_append(&si);
     assert(ret);
 
+    git_reference_free(head);
+    git_strarray_dispose(&arr);
+    git_remote_free(rm);
     git_repository_free(repo);
     git_status_list_free(statuses);
     git_buf_dispose(root);
@@ -1288,7 +1333,7 @@ static bool handle_prompt(void)
         render_path.text = buf;
         left_size -= over;
     }
-           
+
     assert(left_size + empty + right_size == screen_width);
 
     /// Now render everything
@@ -1461,7 +1506,7 @@ int main(int argc, char **argv)
                 break;
 
             case MK_QUIT:
-                quit = true; 
+                quit = true;
                 g_ctx->transfer.headers.success = true;
                 g_ctx->transfer.headers.data_size = 0;
                 printf("MK_QUIT\n");
@@ -1500,7 +1545,7 @@ int main(int argc, char **argv)
 
     if (g_fsmon_thread) {
         // This is how we tell fsmon thread to shutdown
-        *g_fsmon_path = 0;
+        *g_fsmon_workdir = 0;
         ret = SetEvent(g_fsmon_event);
         assert(ret);
 
