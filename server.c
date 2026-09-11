@@ -92,7 +92,7 @@ static ExtEntry extensions[EXT_TOTAL] = {
     [HAS_RUST]   = { 2, { "rs", "rlib"              }},
     [HAS_KOTLIN] = { 3, { "kt", "ktm", "kts"        }},
     [HAS_LUA]    = { 1, { "lua"                     }},
-    [HAS_ASM]    = { 2, { "asm", "s"                }},
+    [HAS_ASM]    = { 3, { "masm", "asm", "s"        }},
 };
 
 
