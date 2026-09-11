@@ -1168,7 +1168,6 @@ static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...
     va_list ap;
     va_start(ap, mask);
     int w = vsnprintf(*where, *available, mask, ap);
-    // TODO: abort?
     if (w <= 0 || w >= *available) abort();
     va_end(ap);
 
@@ -1194,6 +1193,39 @@ static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...
     dest += written;                                        \
     dest_available -= written;                              \
 } while (0)
+
+
+static Comp get_clock_comp(char **where, int *available)
+{
+    Comp ret = {""};
+
+    SYSTEM_POWER_STATUS sps;
+    BOOL ok = GetSystemPowerStatus(&sps);
+    if (!ok) goto out_label;
+
+    if (   sps.ACLineStatus == 255        // Unknown ac status
+        || sps.BatteryFlag == 255         // Cannot use flags
+        || sps.BatteryFlag & 128          // No battery
+        || sps.BatteryLifePercent == 255  // Unknown percent
+    ) goto out_label;
+
+    int percent = sps.BatteryLifePercent;
+    assert(percent >= 0 && percent <= 100);
+    char *icons[] = {"󰂎", "󰁻", "󰁻", "󰁻", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"};
+    static_assert(_Countof(icons) == 11, "");
+    int idx = percent / 10;
+
+    char *icon = icons[idx];
+    bool charging = sps.BatteryFlag & 8;
+
+    char *charge = "";
+    if (charging) charge = "+";
+
+    ret = transfer_data_snprintf(where, available, "%s%s %i%%", icon, charge, percent);
+
+out_label:
+    return ret;
+}
 
 
 static bool handle_prompt(void)
@@ -1260,6 +1292,8 @@ static bool handle_prompt(void)
     Comp clock = transfer_data_snprintf(&tmp, &tmp_available, "🕓 %02i:%02i:%02i", h, m, s);
     clock.len++;
 
+    Comp battery = get_clock_comp(&tmp, &tmp_available);
+
     Comp icon = { "", 1 };
     if (strcmp(userprofile, final_path) == 0) {
         icon.text = "";
@@ -1304,6 +1338,7 @@ static bool handle_prompt(void)
     /// Count and operate on components sizes
     int right_size = clock.len;
     if (duration.len) right_size += duration.len + 1;
+    if (battery.len)  right_size += battery.len + 1;
 
     int space = 1;
     int bracket = 1;
@@ -1318,6 +1353,10 @@ static bool handle_prompt(void)
         clock.text = "";
         clock.len = 0;
         right_size = duration.len;
+
+        if (battery.len) right_size += battery.len;
+        if (battery.len && duration.len) right_size++;
+
         empty = screen_width - left_size - right_size;
     }
 
@@ -1374,9 +1413,13 @@ static bool handle_prompt(void)
     push_color(SGR_DEFAULT);
     push_text("%*s", empty, "");
 
-    if (duration.len)              push_text("%s", duration.text);
-    if (duration.len && clock.len) push_text(" ");
-    if (clock.len)                 push_text("%s", clock.text);
+    if (duration.len) push_text("%s", duration.text);
+    if (duration.len && (battery.len || clock.len)) push_text(" ");
+
+    if (battery.len) push_text("%s", battery.text);
+    if (battery.len && clock.len) push_text(" ");
+
+    if (clock.len) push_text("%s", clock.text);
 
     // ❯
     push_color(error_code ? SGR_BF_RED : SGR_BF_GREEN);
