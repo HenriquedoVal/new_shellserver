@@ -149,7 +149,7 @@ typedef struct {
 
 static DynArr gitstatus_threads;
 
-static void remove_running_thread_idx(int64_t idx)
+static void remove_running_thread_idx(unsigned idx)
 {
     ThreadItem *ti = dynarr_at(&gitstatus_threads, idx);
     assert(ti);
@@ -868,7 +868,7 @@ static bool load_fs_stored_cache(DynArr *da)
     if (!file) return false;
 
     while (!feof(file)) {
-        int r = fread(content, 1, DATA_CAPACITY, file);
+        size_t r = fread(content, 1, DATA_CAPACITY, file);
         if (ferror(file)) return false;
         content[r] = 0;
 
@@ -892,7 +892,7 @@ static bool load_fs_stored_cache(DynArr *da)
 
             last++;
             *last = 0;
-            int err = fseek(file, (int64_t)last - (int64_t)content, SEEK_SET);
+            int err = fseek(file, (long)(last - content), SEEK_SET);
             assert(!err);
         }
 
@@ -1212,14 +1212,12 @@ static Comp get_clock_comp(char **where, int *available)
     int percent = sps.BatteryLifePercent;
     assert(percent >= 0 && percent <= 100);
     char *icons[] = {"󰂎", "󰁻", "󰁻", "󰁻", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"};
-    static_assert(_Countof(icons) == 11, "");
+    static_assert(_countof(icons) == 11, "");
     int idx = percent / 10;
 
     char *icon = icons[idx];
     bool charging = sps.BatteryFlag & 8;
-
-    char *charge = "";
-    if (charging) charge = "+";
+    char *charge = charging ? "+" : "";
 
     ret = transfer_data_snprintf(where, available, "%s%s %i%%", icon, charge, percent);
 

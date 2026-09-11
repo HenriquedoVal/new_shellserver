@@ -227,7 +227,7 @@ const char *ss_get_prompt(
     PromptData *pd = (PromptData *)data;
     Headers *h = (Headers *)&g_ctx->transfer.headers;
 
-    pd->screen_width = term_width - (int)g_admin * strlen(admin);
+    pd->screen_width = (short)(term_width - g_admin * strlen(admin));
     pd->error_code = error_code;
     pd->cmd_dur_ms = cmd_dur_ms;
     strcpy(pd->path, path);
