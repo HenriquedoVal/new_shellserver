@@ -4,9 +4,16 @@
 #include "common.h"
 
 
+typedef enum {
+    SS_CONFIG_GIT_INFO,
+    SS_CONFIG_EXTENSION_ICONS,
+    SS_CONFIG_CMD_DURATION,
+    SS_CONFIG_BATTERY,
+    SS_CONFIG_CLOCK,
+} SSConfigSelector;
+
+
 // __declspec(dllexport) bool ss_register(const char *client);
-// __declspec(dllexport) bool ss_set_config_local(enum? config, int? value);
-// __declspec(dllexport) bool ss_set_config_global(enum? config, int? value);
 
 __declspec(dllexport) bool ss_del_refpath(const char *refpath);
 __declspec(dllexport) bool ss_del_refpath_by_path(const char *path);
@@ -15,6 +22,9 @@ __declspec(dllexport) bool ss_kill_server(void);
 __declspec(dllexport) bool ss_save_cache(void);
 __declspec(dllexport) bool ss_add_refpath(
         const char *path, /*nullable*/ const char *as);
+
+__declspec(dllexport) bool ss_update_config(SSConfigSelector which, bool enable);
+__declspec(dllexport) bool ss_commit_config(void);
 
 __declspec(dllexport) const char *ss_echo(const char *msg);
 __declspec(dllexport) const char *ss_get_path(const char *refpath);

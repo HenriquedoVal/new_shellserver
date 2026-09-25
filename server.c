@@ -140,6 +140,15 @@ static SetGraphicsRendition extmapcolor[EXT_TOTAL] = {
 };
 
 
+static SSConfig g_config  = {
+    .show_git_info        = true,
+    .show_extension_icons = true,
+    .show_cmd_duration    = true,
+    .show_battery         = true,
+    .show_clock           = true,
+};
+
+
 /// Gitstatus thread management
 
 typedef struct {
@@ -984,32 +993,6 @@ typedef struct {
     unsigned len;
 } Comp;
 
-static void format_duration(char buf[7], unsigned duration)
-{
-    int written;
-    unsigned h, m, s;
-    s = duration / 1000;
-    m = s / 60;
-    h = m / 60;
-
-    if (h >= 100) return;
-    if (h) {
-        written = sprintf(buf, "%uh%um", h, m%60);
-        assert(written > 0 && written < 7);
-        return;
-    }
-
-    if (m) {
-        written = sprintf(buf, "%um%us", m, s%60);
-        assert(written > 0 && written < 7);
-        return;
-    }
-
-    written = sprintf(buf, "%.1fs", (float)duration/1000);
-    assert(written > 0 && written < 7);
-}
-
-
 static void set_extensions(const char *path, long *mask, bool *access_denied)
 {
     static_assert(sizeof(*mask) * 8 >= EXT_TOTAL, "");
@@ -1030,6 +1013,12 @@ static void set_extensions(const char *path, long *mask, bool *access_denied)
     );
     if (find == INVALID_HANDLE_VALUE) {
         if (GetLastError() == ERROR_ACCESS_DENIED) *access_denied = true;
+        return;
+    }
+
+    if (!g_config.show_extension_icons) {
+        bool success = FindClose(find);
+        assert(success);
         return;
     }
 
@@ -1080,6 +1069,8 @@ static unsigned short utf8len(const char *str)
 
 static void set_status_item(StatusItem *si, bool *has_git, const char *final_path)
 {
+    if (!g_config.show_git_info) return;
+
     git_buf *root = malloc(sizeof(git_buf));
     int err = git_repository_discover(root, final_path, 0, NULL);
     if (err) return;
@@ -1161,7 +1152,7 @@ static void set_status_item(StatusItem *si, bool *has_git, const char *final_pat
 }
 
 
-static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...)
+static Comp comp_sprintf_and_advance(char **where, int *available, char *mask, ...)
 {
     Comp ret = { .text = *where };
 
@@ -1181,7 +1172,7 @@ static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...
 
 
 // TODO: remove these macros and do through functions, like
-// `transfer_data_snprintf`
+// `comp_sprintf_and_advance`
 #define push_color(color) do {            \
     written = term_buf_sgr(dest, color);  \
     dest += written;                      \
@@ -1198,6 +1189,32 @@ static Comp transfer_data_snprintf(char **where, int *available, char *mask, ...
 static Comp get_clock_comp(char **where, int *available)
 {
     Comp ret = {""};
+    if (!g_config.show_clock) return ret;
+
+    time_t t;
+    struct tm timeinfo;
+    time(&t);
+    errno_t err = localtime_s(&timeinfo, &t);
+    assert(!err);
+
+    int h, m, s;
+    h = timeinfo.tm_hour;
+    m = timeinfo.tm_min;
+    s = timeinfo.tm_sec;
+
+    // TODO: the clock in my font is rendered on two columns, so '+ 1' on len.
+    // Check if it happens with other fonts
+    ret = comp_sprintf_and_advance(where, available, "🕓 %02i:%02i:%02i", h, m, s);
+    ret.len++;
+
+    return ret;
+}
+
+
+static Comp get_battery_comp(char **where, int *available)
+{
+    Comp ret = {""};
+    if (!g_config.show_battery) return ret;
 
     SYSTEM_POWER_STATUS sps;
     BOOL ok = GetSystemPowerStatus(&sps);
@@ -1219,10 +1236,31 @@ static Comp get_clock_comp(char **where, int *available)
     bool charging = sps.BatteryFlag & 8;
     char *charge = charging ? "+" : "";
 
-    ret = transfer_data_snprintf(where, available, "%s%s %i%%", icon, charge, percent);
+    ret = comp_sprintf_and_advance(where, available, "%s%s %i%%", icon, charge, percent);
 
 out_label:
     return ret;
+}
+
+
+static Comp get_duration_comp(char **where, int *available, unsigned duration)
+{
+    Comp ret = {""};
+    if (!g_config.show_cmd_duration || duration < CMD_DUR_THRESHOLD) return ret;
+
+    int written;
+    unsigned h, m, s;
+    s = duration / 1000;
+    m = s / 60;
+    h = m / 60;
+
+    if (h >= 100) return comp_sprintf_and_advance(where, available, "+");
+
+    if (h) return comp_sprintf_and_advance(where, available, " %uh%um", h, m%60);
+
+    if (m) return comp_sprintf_and_advance(where, available, " %um%us", m, s%60);
+
+    return comp_sprintf_and_advance(where, available, " %.1fs", (float)duration/1000);
 }
 
 
@@ -1237,21 +1275,21 @@ static bool handle_prompt(void)
     short error_code    = pd->error_code;
     unsigned cmd_dur_ms = pd->cmd_dur_ms;
 
+    const char *const userprofile = getenv("USERPROFILE");
+    if (userprofile == NULL) return false;
+
     char final_path[MAX_PATH];
     if (!set_valid_path(final_path, pd->path)) return false;
-
-    long extmask = 0;
-    bool access_denied = false;
-    bool file_exists = PathFileExistsA(final_path);
 
     // We need to check access_denied again inside `set_extensions` because we
     // may have permission to see the path, but not to list it. And we will
     // treat both cases the same way
+    long extmask = 0;
+    bool access_denied = false;
+    bool file_exists = PathFileExistsA(final_path);
     if (file_exists) set_extensions(final_path, &extmask, &access_denied);
     else access_denied = GetLastError() == ERROR_ACCESS_DENIED;
 
-    const char *const userprofile = getenv("USERPROFILE");
-    if (userprofile == NULL) return false;
     if (file_exists && _stricmp(userprofile, final_path))
         add_refpath(final_path, NULL);
 
@@ -1267,30 +1305,9 @@ static bool handle_prompt(void)
     char *dest = g_ctx->transfer.data;
 
     /// Populate components
-    char buf[WORK_BUF] = {0};
-    Comp duration = {""};
-    if (cmd_dur_ms > CMD_DUR_THRESHOLD) {
-        format_duration(buf, cmd_dur_ms);
-        duration = transfer_data_snprintf(&tmp, &tmp_available, " %s", buf);
-    }
-
-    time_t t;
-    struct tm timeinfo;
-    time(&t);
-    errno_t err = localtime_s(&timeinfo, &t);
-    assert(!err);
-
-    int h, m, s;
-    h = timeinfo.tm_hour;
-    m = timeinfo.tm_min;
-    s = timeinfo.tm_sec;
-
-    // TODO: the clock in my font is rendered on two columns, so '+ 1' on len.
-    // Check if it happens with other fonts
-    Comp clock = transfer_data_snprintf(&tmp, &tmp_available, "🕓 %02i:%02i:%02i", h, m, s);
-    clock.len++;
-
-    Comp battery = get_clock_comp(&tmp, &tmp_available);
+    Comp duration = get_duration_comp(&tmp, &tmp_available, cmd_dur_ms);
+    Comp clock = get_clock_comp(&tmp, &tmp_available);
+    Comp battery = get_battery_comp(&tmp, &tmp_available);
 
     Comp icon = { "", 1 };
     if (strcmp(userprofile, final_path) == 0) {
@@ -1316,7 +1333,7 @@ static bool handle_prompt(void)
         git.len = 1;
 
         if (*si.branch) {
-            branch = transfer_data_snprintf(&tmp, &tmp_available, " %s", si.branch);
+            branch = comp_sprintf_and_advance(&tmp, &tmp_available, " %s", si.branch);
         } else {
             branch.text = "...";
             branch.len = 3;
@@ -1334,9 +1351,8 @@ static bool handle_prompt(void)
     }
 
     /// Count and operate on components sizes
-    int right_size = clock.len;
-    if (duration.len) right_size += duration.len + 1;
-    if (battery.len)  right_size += battery.len + 1;
+    int right_size = clock.len + duration.len + battery.len;
+    right_size += __max(!!clock.len + !!duration.len + !!battery.len -1, 0);
 
     int space = 1;
     int bracket = 1;
@@ -1358,6 +1374,7 @@ static bool handle_prompt(void)
         empty = screen_width - left_size - right_size;
     }
 
+    char buf[WORK_BUF] = {0};
     if ((right_size && empty < 1) || (!right_size && empty < 0)) {
         empty = right_size ? 1 : 0;
         int over = left_size + empty + right_size - screen_width;
@@ -1435,6 +1452,28 @@ static bool handle_prompt(void)
 
 #undef push_color
 #undef push_text
+
+
+#define SS_MAYBE_UPDATE_CONFIG(field)                       \
+    if (update->field != SS_CONFIG_KEEP)                    \
+        g_config.field = update->field == SS_CONFIG_ENABLE
+
+static bool handle_update_config(void)
+{
+    unsigned short data_size = g_ctx->transfer.headers.data_size;
+    g_ctx->transfer.headers.data_size = 0;
+    if (data_size < sizeof(SSUpdateConfig)) return false;
+
+    SSUpdateConfig *update = (SSUpdateConfig *)g_ctx->transfer.data;
+
+    SS_MAYBE_UPDATE_CONFIG(show_git_info);
+    SS_MAYBE_UPDATE_CONFIG(show_extension_icons);
+    SS_MAYBE_UPDATE_CONFIG(show_cmd_duration);
+    SS_MAYBE_UPDATE_CONFIG(show_battery);
+    SS_MAYBE_UPDATE_CONFIG(show_clock);
+
+    return true;
+}
 
 
 /// Entry point
@@ -1544,6 +1583,12 @@ int main(int argc, char **argv)
                 success = handle_save_cache();
                 g_ctx->transfer.headers.success = success;
                 printf("MK_SAVE: %s\n", success ? "true" : "false");
+                break;
+
+            case MK_CONFIG:
+                success = handle_update_config();
+                g_ctx->transfer.headers.success = success;
+                printf("MK_CONFIG: %s\n", success ? "true" : "false");
                 break;
 
             case MK_QUIT:

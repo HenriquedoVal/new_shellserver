@@ -19,7 +19,8 @@ enum MESSAGE_KIND {
     MK_REFGETALL,
     MK_DUMP_MEM,
     MK_DUMP_DISK,
-    MK_SAVE
+    MK_SAVE,
+    MK_CONFIG
 };
 
 typedef struct {
@@ -50,3 +51,22 @@ typedef struct {
 } PromptData;
 
 static_assert(MAX_UDP > sizeof(PromptData) + MAX_PATH, "");
+
+typedef enum {
+    SS_CONFIG_DISABLE = -1,
+    SS_CONFIG_KEEP,
+    SS_CONFIG_ENABLE
+} SSUpdateConfigValue;
+
+// Ensure they have the same field names
+#define SS_TYPEDEF_STRUCT_CONFIG(Name, type_t) \
+typedef struct {                               \
+    type_t show_git_info;                      \
+    type_t show_extension_icons;               \
+    type_t show_cmd_duration;                  \
+    type_t show_battery;                       \
+    type_t show_clock;                         \
+} Name
+
+SS_TYPEDEF_STRUCT_CONFIG(SSConfig, bool);
+SS_TYPEDEF_STRUCT_CONFIG(SSUpdateConfig, SSUpdateConfigValue);

@@ -4,11 +4,19 @@
 
 #include "common.c"
 
+#include <assert.h>
+
+
+static_assert(sizeof(SSConfigSelector) == sizeof(int), "");
+
+
 // TODO: handle if return from server is not the same kind we gave to it. Not
 // all function are exactly reentrant so we can't just call them again
 
 
 /// Static
+
+static SSUpdateConfig g_update = {0};
 
 static bool IsUserAdmin(void)
 {
@@ -209,6 +217,55 @@ bool ss_kill_server(void)
 bool ss_save_cache(void)
 {
     return no_arg_returns_success(MK_SAVE);
+}
+
+
+// Receiving the struct is bad, it would require the user of the dll
+// to know the memory layout of the structure SSUpdateConfig
+bool ss_update_config(SSConfigSelector which, bool enable)
+{
+    SSUpdateConfigValue value =
+        enable ? SS_CONFIG_ENABLE : SS_CONFIG_DISABLE;
+
+    switch (which) {
+        case SS_CONFIG_GIT_INFO:
+            g_update.show_git_info = value;
+            break;
+        case SS_CONFIG_EXTENSION_ICONS:
+            g_update.show_extension_icons = value;
+            break;
+        case SS_CONFIG_CMD_DURATION:
+            g_update.show_cmd_duration = value;
+            break;
+        case SS_CONFIG_BATTERY:
+            g_update.show_battery = value;
+            break;
+        case SS_CONFIG_CLOCK:
+            g_update.show_clock = value;
+            break;
+        default:
+            return false;
+    }
+
+    return true;
+}
+
+bool ss_commit_config(void)
+{
+    if (!client_init()) return false;
+
+    SSUpdateConfig *config = (void *)g_ctx->transfer.data;
+    *config = g_update;
+    g_update = (SSUpdateConfig){0};
+
+    g_ctx->transfer.headers.kind = MK_CONFIG;
+    g_ctx->transfer.headers.data_size = sizeof(SSUpdateConfig);
+
+    if (!_ss_send()) return false;
+    if (!_ss_recv()) return false;
+    assert(g_ctx->transfer.headers.data_size == 0);
+
+    return g_ctx->transfer.headers.success;
 }
 
 
