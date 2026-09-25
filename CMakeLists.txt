@@ -12,6 +12,7 @@ set(BUILD_CLI         OFF       CACHE BOOL   "" FORCE)
 set(BUILD_TESTS       OFF       CACHE BOOL   "" FORCE)
 set(STATIC_CRT        OFF       CACHE BOOL   "" FORCE)
 
+add_compile_definitions(GIT_EXTERN_DECL=)
 add_subdirectory(libgit2)
 
 unset(BUILD_CLI)
