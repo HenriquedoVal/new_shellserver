@@ -100,6 +100,21 @@ This file is loaded on server startup.
 ---
 </details>
 
+
+<details>
+<summary><code>Update-ShellServerConfig</code></summary>
+
+Cmdlet to change the visibility of the prompt components.  
+  
+Syntax:
+- `Update-ShellServerConfig [-GitInfo <bool>] [-ExtensionIcons <bool>] [-CmdDuration <bool>] [-Battery <bool>] [-Clock <bool>]`
+
+E.g: `Update-ShellServerConfig -Battery $false -Clock $false` will remove battery and clock from prompt.
+
+---
+</details>
+
+
 <details>
 <summary>Neovim <code>P</code> command</summary>
 
